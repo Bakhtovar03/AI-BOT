@@ -8,3 +8,4 @@ user_router = Router()
 @user_router.message(CommandStart())
 async def start(message: Message):
     await message.answer(COMMAND_LEXICON[message.text])
+

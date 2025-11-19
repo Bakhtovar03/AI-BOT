@@ -12,7 +12,7 @@ from lexicon.lexicon import PROMPT_LEXICON
 from langchain_classic.text_splitter import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_gigachat.chat_models import GigaChat
-
+from docx import Document
 # Чтение переменных окружения и создание экземпляра модели GigaChat
 env = Env()
 env.read_env()
@@ -23,16 +23,37 @@ hf_embeddings_model = HuggingFaceEmbeddings(model_name="sberbank-ai/sbert_large_
 
 # Загрузка или создание векторного индекса FAISS
 index_path = 'faiss_db'
-if os.path.exists(index_path):
+
+if  os.path.exists(index_path):
     print("Загружаю существующий индекс...")
     db = FAISS.load_local(index_path, hf_embeddings_model, allow_dangerous_deserialization=True)
 else:
     print("Создаю новый индекс...")
+    try:
+        doc = Document('rag_data.docx')
+        full_text =[]
+        for paragraph in doc.paragraphs:
+            full_text.append(paragraph.text)
+            doc_text = '\n'.join(full_text)
+    except FileNotFoundError:
+        print("Ошибка: файл не найден. Убедитесь, что указанный файл существует.")
+        exit()  # Прерывание работы программы при отсутствии файла
+
+    # Преобразование текста в куски (chunks) заданного размера
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100, length_function=len)
     split_documents = splitter.create_documents([document[i]['answer'] for i in range(len(document))])
-    embeddings = hf_embeddings_model.embed_documents([doc.page_content for doc in split_documents])
-    db = FAISS.from_documents(split_documents, embeddings)
+    split_documents_docx = splitter.create_documents([doc_text])
+
+    # Объединяем оба набора документов
+    all_documents = split_documents + split_documents_docx
+
+    # Создаём индекс из docx документов потому что FAQ документ пока в разработке
+    db = FAISS.from_documents(split_documents_docx, hf_embeddings_model)
+
+    # Сохраняем индекс на диске
     db.save_local(index_path)
+
+
 
 # Получение retriever'а для поиска похожих документов
 retriever = db.as_retriever()
@@ -55,4 +76,8 @@ chain = (
 
 # Выполняем запрос и выводим результат
 result = chain.invoke('как записаться на курсы к кому обратиться?')
+print(result)
+result = chain.invoke('сколько стоит курс по программированию?')
+print(result)
+result = chain.invoke('как проходят занятия?')
 print(result)
