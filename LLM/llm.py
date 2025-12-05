@@ -3,10 +3,11 @@ from docx import Document  # Библиотека для чтения файло
 from environs import Env  # Библиотека для безопасной работы с переменными окружения
 from gigachat import GigaChat  # API клиент для общения с моделью GigaChat
 import redis  # Клиент для работы с Redis (хранилище истории)
+from langchain_community.embeddings import GigaChatEmbeddings
 
 # LangChain модули для построения цепочки обработки
 from langchain_community.vectorstores import FAISS  # Векторное хранилище для семантического поиска
-from langchain_huggingface import HuggingFaceEmbeddings  # Модель для преобразования текста в векторы
+
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder  # Конструкторы промптов
 from langchain_core.output_parsers import StrOutputParser  # Парсер для преобразования вывода в строку
 from langchain_core.runnables import (
@@ -54,10 +55,8 @@ def giga_invoke(prompt_text: str) -> str:
 # =============================================================================
 
 # Создаем эмбеддинги (преобразование текста в векторы) с помощью русской модели SBERT
-hf_embeddings = HuggingFaceEmbeddings(
-    model_name="sberbank-ai/sbert_large_nlu_ru",  # Российская модель для понимания текста
-    model_kwargs={"device": "cpu"},  # Используем CPU (можно "cuda" если есть GPU)
-    encode_kwargs={"normalize_embeddings": True},  # Нормализуем векторы для лучшей производительности
+hf_embeddings = GigaChatEmbeddings(
+credentials=GIGA_KEY, verify_ssl_certs=False
 )
 
 index_path = "LLM/faiss_db"  # Путь, где хранится индекс FAISS
@@ -100,7 +99,10 @@ retriever = db.as_retriever()
 # =============================================================================
 
 # Подключаемся к локальному Redis серверу
-redis_client = redis.Redis(host='localhost', port=6380)
+redis_host = os.getenv("REDIS_HOST", "redis")
+redis_port = int(os.getenv("REDIS_PORT", 6379))
+
+redis_client = redis.Redis(host=redis_host, port=redis_port)
 
 
 def get_redis_history(session_id):

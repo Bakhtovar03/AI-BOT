@@ -37,3 +37,6 @@ async def llm_response(message: Message):
         text=ask_giga_chat(message.text,str(message.from_user.id)),
         reply_markup=create_inline_keyboards('sign_up')
     )
+@user_router.message()
+async def default_response(message: Message):
+    await message.answer('Извините, я отвечаю только на текстовые сообщения')
