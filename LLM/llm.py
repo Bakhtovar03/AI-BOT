@@ -1,214 +1,157 @@
 import os
-from docx import Document  # Библиотека для чтения файлов .docx
-from environs import Env  # Библиотека для безопасной работы с переменными окружения
-from gigachat import GigaChat  # API клиент для общения с моделью GigaChat
-import redis  # Клиент для работы с Redis (хранилище истории)
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
+from docx import Document
+from environs import Env
+
+from gigachat import GigaChat
+
 from langchain_community.embeddings import GigaChatEmbeddings
+from langchain_community.vectorstores import FAISS
 
-# LangChain модули для построения цепочки обработки
-from langchain_community.vectorstores import FAISS  # Векторное хранилище для семантического поиска
-
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder  # Конструкторы промптов
-from langchain_core.output_parsers import StrOutputParser  # Парсер для преобразования вывода в строку
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import (
-    RunnableLambda,  # Обработчик для выполнения функций в цепи
-    RunnableParallel,  # Запуск нескольких операций одновременно
-    RunnableWithMessageHistory,  # Интеграция истории сообщений
-    RunnablePassthrough  # Пропуск данных без изменений
+    RunnableLambda,
+    RunnableParallel,
+    RunnableWithMessageHistory
 )
-from langchain_redis import RedisChatMessageHistory  # История сообщений в Redis
-from langchain_classic.text_splitter import RecursiveCharacterTextSplitter  # Разбиение текста на куски
 
-from lexicon.lexicon import PROMPT_LEXICON  # Словарь с шаблонами промптов
+from langchain_redis import RedisChatMessageHistory
+from langchain_classic.text_splitter import RecursiveCharacterTextSplitter
+from redis import Redis
 
-# =============================================================================
-# 1️⃣ ИНИЦИАЛИЗАЦИЯ GIGACHAT API
-# =============================================================================
+from lexicon.lexicon import PROMPT_LEXICON
+
+
+# ============================================================
+# 1. ИНИЦИАЛИЗАЦИЯ GIGACHAT
+# ============================================================
 
 env = Env()
-env.read_env()  # Читаем переменные окружения из .env файла
-GIGA_KEY = env.str("GIGACHAT_KEY")  # Получаем API ключ для GigaChat
+env.read_env()
 
-# Создаем клиент GigaChat с конфигурацией
+GIGA_KEY = env.str("GIGACHAT_KEY")
+
+# клиент GigaChat (он синхронный)
 giga = GigaChat(
     credentials=GIGA_KEY,
-    verify_ssl_certs=False  # Отключаем проверку SSL (для локальной разработки)
+    verify_ssl_certs=False
 )
 
 
-def giga_invoke(prompt_text: str) -> str:
-    """
-    Отправляет промпт в GigaChat и возвращает ответ.
-
-    Args:
-        prompt_text: Текст промпта для отправки модели
-
-    Returns:
-        Текстовый ответ от модели GigaChat
-    """
-    response = giga.chat(prompt_text)
-    return response.choices[0].message.content  # Извлекаем только текст ответа
+# --- async wrapper ---
+executor = ThreadPoolExecutor(max_workers=10)
+async def giga_invoke_async(prompt_text: str) -> str:
+    """Асинхронный вызов GigaChat через executor."""
+    loop = asyncio.get_event_loop()
+    response = await loop.run_in_executor(executor, giga.chat, prompt_text)
+    return response.choices[0].message.content
 
 
-# =============================================================================
-# 2️⃣ НАСТРОЙКА ВЕКТОРНОГО ХРАНИЛИЩА (FAISS) И ЭМБЕДДИНГОВ
-# =============================================================================
+# ============================================================
+# 2. ВЕКТОРНОЕ ХРАНИЛИЩЕ / ЭМБЕДДИНГИ
+# ============================================================
 
-# Создаем эмбеддинги (преобразование текста в векторы) с помощью русской модели SBERT
-hf_embeddings = GigaChatEmbeddings(
-credentials=GIGA_KEY, verify_ssl_certs=False
+embeddings = GigaChatEmbeddings(
+    credentials=GIGA_KEY,
+    verify_ssl_certs=False
 )
 
-index_path = "LLM/faiss_db"  # Путь, где хранится индекс FAISS
+index_path = "LLM/faiss_db"
 
-# Проверяем, существует ли уже индекс
 if os.path.exists(index_path):
-    # Загружаем существующий индекс (быстрее, чем создавать новый)
     print("Загружаю существующий FAISS индекс...")
     db = FAISS.load_local(
         index_path,
-        hf_embeddings,
+        embeddings,
         allow_dangerous_deserialization=True
     )
 else:
-    # Создаем новый индекс, если его еще нет
     print("Создаю новый FAISS индекс...")
 
-    # Читаем документ .docx
     doc = Document("LLM/rag.docx")
-    # Объединяем все абзацы документа в один текст
     full_text = "\n".join([p.text for p in doc.paragraphs])
 
-    # Разбиваем большой текст на куски для лучшей обработки
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=500,  # Размер одного куска (символов)
-        chunk_overlap=50  # Перекрытие между кусками для контекста
-    )
+    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
     docs = splitter.create_documents([full_text])
 
-    # Создаем FAISS индекс из кусков текста с их эмбеддингами
-    db = FAISS.from_documents(docs, hf_embeddings)
-    # Сохраняем индекс на диск для будущих использований
+    db = FAISS.from_documents(docs, embeddings)
     db.save_local(index_path)
 
-# Создаем retriever - инструмент для поиска релевантных документов по запросу
 retriever = db.as_retriever()
 
-# =============================================================================
-# 3️⃣ НАСТРОЙКА REDIS ДЛЯ ХРАНЕНИЯ ИСТОРИИ ЧАТА
-# =============================================================================
 
-# Подключаемся к локальному Redis серверу
+# ============================================================
+# 3. АСИНХРОННЫЙ REDIS
+# ============================================================
+
 redis_host = os.getenv("REDIS_HOST", "redis")
 redis_port = int(os.getenv("REDIS_PORT", 6379))
 
-redis_client = redis.Redis(host=redis_host, port=redis_port)
+#redis_client = Redis(host=redis_host, port=redis_port)
+redis_client = Redis(host=redis_host, port=redis_port)
 
-
-def get_redis_history(session_id):
-    """
-    Получает историю сообщений для конкретной пользовательской сессии.
-
-    Args:
-        session_id: Уникальный идентификатор сессии пользователя
-
-    Returns:
-        Объект истории сообщений из Redis
-    """
-    history = RedisChatMessageHistory(
+def get_redis_history(session_id: str):
+    return RedisChatMessageHistory(
         redis_client=redis_client,
         session_id=session_id,
-        ttl=3600,  # Time To Live - история хранится 1 час
+        ttl=3600,
     )
-    return history
 
 
-# =============================================================================
-# 4️ СОЗДАНИЕ ПРОМПТА С ПОДДЕРЖКОЙ ИСТОРИИ
-# =============================================================================
 
-# Строим структурированный промпт для модели
+# 4. ПРОМПТ
+
+
 prompt = ChatPromptTemplate.from_messages([
-    # Системное сообщение - инструкции для модели
-    ("system", f'{PROMPT_LEXICON["assistent_template"]}'),
-
-    # MessagesPlaceholder - заполнитель для истории сообщений
-    # LangChain автоматически подставит сюда историю разговора
+    ("system", PROMPT_LEXICON["assistent_template"]),
     MessagesPlaceholder(variable_name="history"),
 ])
 
 
-# =============================================================================
-# 5️⃣ СОЗДАНИЕ RAG ЦЕПОЧКИ (Retrieval-Augmented Generation)
-# =============================================================================
+
+# 5. RAG-ЦЕПОЧКА
+
 
 def format_docs(docs):
-    """
-    Форматирует найденные документы в читаемый текст.
-
-    Args:
-        docs: Список найденных документов
-
-    Returns:
-        Объединенный текст всех документов
-    """
     return "\n\n".join(d.page_content for d in docs)
 
 
-# Главная цепочка обработки:
 rag_chain = (
-    # Шаг 1️: Параллельная подготовка трех компонентов
-        RunnableParallel({
-            # Компонент 1: Вопрос пользователя - просто передаем как есть
-            "question": RunnableLambda(lambda x: x["question"]),
-
-            # Компонент 2: Поиск контекста в документах
-            # 2.1: Берем вопрос и ищем релевантные документы в FAISS
-            "context": RunnableLambda(lambda x: retriever.invoke(x["question"]))
-                       # 2.2: Форматируем найденные документы в текст
-                       | RunnableLambda(format_docs),
-
-            #Компонент 3: История разговора
-            # последние 2 сообщения для контекста
-            "history": RunnableLambda(lambda x: x.get("history", [])[-4:]),
-        })
-        # Шаг 2️: Подставляем все компоненты в промпт
-        | prompt
-        # Шаг 3️: Преобразуем сообщения в строку
-        | (lambda msg: msg.to_string())
-        # Шаг 4️: Отправляем в GigaChat API
-        | RunnableLambda(giga_invoke)
-        # Шаг 5️: Парсим ответ (преобразуем в строку)
-        | StrOutputParser()
+    RunnableParallel({
+        "question": RunnableLambda(lambda x: x["question"]),
+        "context": RunnableLambda(lambda x: retriever.invoke(x["question"]))
+                   | RunnableLambda(format_docs),
+        "history": RunnableLambda(lambda x: x.get("history", [])[-8:])
+    })
+    | prompt
+    | RunnableLambda(lambda msg: msg.to_string())
+    | RunnableLambda(lambda text: asyncio.run(giga_invoke_async(text)))
+    | StrOutputParser()
 )
 
-# Оборачиваем цепочку для работы с историей сообщений
+
+# Обёртка с историей
 chain_with_history = RunnableWithMessageHistory(
     rag_chain,
-    get_session_history=get_redis_history,  # Функция для получения истории
-    input_messages_key="question",  # Ключ для текущего вопроса
-    history_messages_key="history"  # Ключ для истории
+    get_session_history=get_redis_history,
+    input_messages_key="question",
+    history_messages_key="history"
 )
 
 
-# =============================================================================
-# ОСНОВНАЯ ФУНКЦИЯ ДЛЯ ВЫЗОВА
-# =============================================================================
 
-def ask_giga_chat(user_question: str, session_id: str) -> str:
+# 6. ASYNC API ДЛЯ ТЕЛЕГРАМ-БОТА
+
+async def ask_giga_chat_async(user_question: str, session_id: str) -> str:
     """
-    Главная функция для общения с ботом.
-
-    Args:
-        user_question: Вопрос пользователя
-        session_id: ID сессии (разные пользователи = разные session_id)
-
-    Returns:
-        Ответ от GigaChat с учетом истории и контекста
+    Асинхронная функция общения с AI.
     """
-    return chain_with_history.invoke(
-        {"question": user_question},  # Входные данные
-        config={"configurable": {"session_id": session_id}}  # Конфигурация сессии
+    return await chain_with_history.ainvoke(
+        {"question": user_question},
+        config={"configurable": {"session_id": session_id}}
     )
 
 

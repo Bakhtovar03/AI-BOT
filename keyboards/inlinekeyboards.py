@@ -8,7 +8,7 @@ def create_inline_keyboards(*buttons: str):
     kb_builder = InlineKeyboardBuilder()
     kb_builder.row(*[
         InlineKeyboardButton(
-            text=BUTTON_LEXICON[button],
+            text=BUTTON_LEXICON.get(button,button) ,
             callback_data=str(button)
         ) for button in buttons
     ],width=1)
