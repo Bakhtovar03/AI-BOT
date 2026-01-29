@@ -8,7 +8,8 @@ from LLM.llm import redis_client
 from keyboards.keyboards import create_keyboards
 from lexicon.lexicon import ADMIN_BUTTON_LEXICON
 from utils import IsAdmin
-from keyboards.inlinekeyboards import create_inline_keyboards
+from keyboards.inlinekeyboards import create_inline_keyboards, create_inline_keyboards_callback
+
 # Создаем роутер для админ-команд
 admin_router = Router()
 
@@ -63,13 +64,16 @@ async def add_new_admin(message: Message, state: FSMContext):
 
 
 # добавления админа
-@admin_router.message(StateFilter(FSMAdmin.add_new_admin))
+@admin_router.message(F.text !='отмена',StateFilter(FSMAdmin.add_new_admin))
 async def save_new_admin(message: Message, state: FSMContext):
     redis_client = getattr(message.bot, 'redis_client')
     if message.forward_from:
         user_id = message.forward_from.id
         await redis_client.sadd('admins', user_id)
-        await message.answer('Новый Администратор успешно добавлен!')
+        await message.answer(
+            'Новый Администратор успешно добавлен!',
+            reply_markup=create_keyboards(['ок'], 2).as_markup(resize_keyboard=True)
+        )
         await state.set_state(FSMAdmin.admin_panel)
     else:
         await message.answer(
@@ -84,14 +88,17 @@ async def response_delete_admin(message: Message, state: FSMContext):
     redis_client = getattr(message.bot, 'redis_client')
     admin_ids = await redis_client.smembers('admins')
     admins_names =[]
+
     if admin_ids:
         for admin_id in admin_ids:
             admin = await  message.bot.get_chat(admin_id)
             admins_names.append(admin.first_name)
 
+        admin_id_and_name = dict(zip(admin_ids, admins_names))
+
         await message.answer(
             'Выберите админа которого хотите удалить:',
-            reply_markup=create_inline_keyboards(*admins_names)
+            reply_markup=create_inline_keyboards_callback(admin_id_and_name)
         )
         await message.answer(text='Нажмите на кнопку с именем админа которого нужно удалить',
             reply_markup=create_keyboards(["отмена"], 1).as_markup(resize_keyboard=True))
@@ -99,6 +106,53 @@ async def response_delete_admin(message: Message, state: FSMContext):
         await state.set_state(FSMAdmin.delete_admin)
     else:
         await message.answer('Список админов пуст')
+
+
+# Обработчик callback запроса для удаления администратора
+@admin_router.callback_query(F.data, FSMAdmin.delete_admin)
+async def delete_admin(callback: CallbackQuery, state: FSMContext):
+    # Получаем объект Redis из бота
+    redis_client = getattr(callback.bot, 'redis_client')
+
+    # Получаем ID администратора из callback data
+    admin_id = callback.data
+
+    # Проверяем, что admin_id является числом
+    if not admin_id.isdigit():
+        # Если нет, отправляем пользователю сообщение
+        await callback.message.answer("Выберите администратора которого хотите удалить из списка выше")
+        await callback.answer()  # Завершаем callback
+        return
+
+    # Преобразуем admin_id в число
+    admin_id = int(admin_id)
+
+    # Получаем объект чата администратора
+    name = await callback.bot.get_chat(admin_id)
+
+    # Проверяем, есть ли этот админ в Redis
+    is_admin = await redis_client.sismember('admins', admin_id)
+
+    if not is_admin:
+        # Если админа нет в списке, отправляем сообщение
+        await callback.message.answer("Выберите администратора которого хотите удалить из списка выше")
+        await callback.answer()
+        return
+
+    # Удаляем администратора из Redis
+    await redis_client.srem('admins', admin_id)
+
+    # Отправляем сообщение пользователю о том, что админ удален
+    await callback.message.answer(
+        f'{name.first_name} Больше не является Администратором',
+        reply_markup=create_keyboards(["ок"], 1).as_markup(resize_keyboard=True)
+    )
+
+    # Завершаем callback
+    await callback.answer()
+
+    # Возвращаем состояние в панель администратора
+    await state.set_state(FSMAdmin.admin_panel)
 
 
 # Просмотр всех фотографий из базы Redis

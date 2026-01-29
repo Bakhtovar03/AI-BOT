@@ -10,10 +10,10 @@ services:
       - ./redis.conf:/redis-stack.conf   # подключаем локальный конфиг
     networks:
       - app-net
-    command: ["redis-server", "/redis-stack.conf"]  # запускаем Redis с конфигом
+    command: ["redis-stack-server", "/redis-stack.conf"]  # запускаем Redis с конфигом
 
   app:
-    image: ai-bot
+    build: .
     container_name: ai-bot
     env_file:
       - .env
