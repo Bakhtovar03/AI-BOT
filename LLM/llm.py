@@ -72,7 +72,9 @@ else:
     print("Создаю новый FAISS индекс...")
 
     doc = Document("LLM/rag.docx")
+
     full_text = "\n".join([p.text for p in doc.paragraphs])
+
 
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
     docs = splitter.create_documents([full_text])
@@ -90,7 +92,7 @@ retriever = db.as_retriever()
 redis_host = os.getenv("REDIS_HOST", "redis")
 redis_port = int(os.getenv("REDIS_PORT", 6379))
 
-#redis_client = Redis(host=redis_host, port=redis_port)
+
 redis_client = Redis(host=redis_host, port=redis_port)
 
 def get_redis_history(session_id: str):
@@ -108,6 +110,7 @@ def get_redis_history(session_id: str):
 prompt = ChatPromptTemplate.from_messages([
     ("system", PROMPT_LEXICON["assistent_template"]),
     MessagesPlaceholder(variable_name="history"),
+    ('user','{question}')
 ])
 
 
