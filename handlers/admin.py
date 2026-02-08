@@ -184,7 +184,7 @@ async def get_videos(message: Message, state: FSMContext):
 @admin_router.message(F.text==ADMIN_BUTTON_LEXICON['add_video'], StateFilter(FSMAdmin.admin_panel))
 async def add_video(message: Message, state: FSMContext):
     await message.answer(
-        text='Отправьте мне видео которое хотите добавить',
+        text='Пришлите, пожалуйста, видео, которое планируете добавить',
         reply_markup=create_keyboards(["отмена"], 1).as_markup(resize_keyboard=True)
     )
     await state.set_state(FSMAdmin.add_video)
@@ -219,7 +219,7 @@ async def request_for_remove_video(message: Message, state: FSMContext):
         media = [InputMediaVideo(media=pid) for pid in video_list]
         await message.answer_media_group(media)
         await message.answer(
-            'Введите порядковый номер видео который хотите удалить',
+            'Введите порядковый номер видео которое хотите удалить',
             reply_markup=create_keyboards(["отмена"],1).as_markup(resize_keyboard=True)
         )
         await state.set_state(FSMAdmin.delete_video)
@@ -293,7 +293,7 @@ async def delete_video(message: Message, state: FSMContext):
 @admin_router.message(F.text ==ADMIN_BUTTON_LEXICON['add_photo'], StateFilter(FSMAdmin.admin_panel))
 async def add_photo(message: Message, state: FSMContext):
     await message.answer(
-        'Отправьте мне фотографию которою хотите добавить',
+        'Пришлите, пожалуйста, фото, которое планируете добавить',
         reply_markup=create_keyboards(["отмена"], 1).as_markup(resize_keyboard=True)
     )
     await state.set_state(FSMAdmin.add_photo)
