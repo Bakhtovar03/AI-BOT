@@ -1,7 +1,7 @@
 import os
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-
+import yaml
 from docx import Document
 from environs import Env
 
@@ -37,7 +37,8 @@ GIGA_KEY = env.str("GIGACHAT_KEY")
 # клиент GigaChat (он синхронный)
 giga = GigaChat(
     credentials=GIGA_KEY,
-    verify_ssl_certs=False
+    verify_ssl_certs=False,
+
 )
 
 
@@ -58,9 +59,23 @@ embeddings = GigaChatEmbeddings(
     credentials=GIGA_KEY,
     verify_ssl_certs=False
 )
+index_path = "LLM/faiss_db"
+yaml_path = "LLM/rag.yaml"  # теперь база в YAML
+
+# =========================
+# 1. Загрузка/создание FAISS
+# =========================
+import os
+import yaml
+from langchain_community.vectorstores import FAISS
+from langchain_classic.text_splitter import RecursiveCharacterTextSplitter
 
 index_path = "LLM/faiss_db"
+yaml_path = "LLM/rag.yaml"
 
+# =========================
+# Загрузка или создание FAISS
+# =========================
 if os.path.exists(index_path):
     print("Загружаю существующий FAISS индекс...")
     db = FAISS.load_local(
@@ -71,17 +86,37 @@ if os.path.exists(index_path):
 else:
     print("Создаю новый FAISS индекс...")
 
-    doc = Document("LLM/rag.docx")
+    # 1️⃣ Загружаем YAML
+    with open(yaml_path, "r", encoding="utf-8") as f:
+        yaml_data = yaml.safe_load(f)
 
-    full_text = "\n".join([p.text for p in doc.paragraphs])
+    # 2️⃣ Превращаем каждый курс в текст
+    texts = []
+    for course in yaml_data["COURSES"]:
+        text = "\n".join([
+            f"id: {course.get('id')}",
+            f"title: {course.get('title')}",
+            f"age_min: {course.get('age_min')}",
+            f"age_max: {course.get('age_max')}",
+            f"skills: {', '.join(course.get('skills', []))}",
+            f"child_outcomes: {', '.join(course.get('child_outcomes', []))}",
+            f"parent_value: {', '.join(course.get('parent_value', []))}",
+            f"when_to_offer: {course.get('when_to_offer')}",
+            f"tags: {', '.join(course.get('tags', []))}",
+        ])
+        texts.append(text)
 
-
+    # 3️⃣ Разбиваем тексты на чанки
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-    docs = splitter.create_documents([full_text])
+    chunks = []
+    for t in texts:
+        chunks.extend(splitter.split_text(t))  # каждый чанк — просто строка
 
-    db = FAISS.from_documents(docs, embeddings)
+    # 4️⃣ Создаём FAISS индекс напрямую из строк
+    db = FAISS.from_texts(chunks, embeddings)
     db.save_local(index_path)
 
+# Получаем retriever для RAG
 retriever = db.as_retriever()
 
 
@@ -108,10 +143,23 @@ def get_redis_history(session_id: str):
 
 
 prompt = ChatPromptTemplate.from_messages([
-    ("system", PROMPT_LEXICON["assistent_template"]),
+
+    # 1. ЛОГИКА ПРИНЯТИЯ РЕШЕНИЙ
+    ("system", PROMPT_LEXICON["system_policy"]),
+
+    # 2. ПРИНУДИТЕЛЬНОЕ ИСПОЛЬЗОВАНИЕ RAG
+    ("system", PROMPT_LEXICON["rag_guard"]),
+
+    # 3. СТИЛЬ ОТВЕТА (ПОСЛЕДНИЙ!)
+    ("system", PROMPT_LEXICON["assistant_template"]),
+
+    # 4. ИСТОРИЯ
     MessagesPlaceholder(variable_name="history"),
-    ('user','{question}')
+
+    # 5. ВОПРОС
+    ("user", "{question}")
 ])
+
 
 
 
@@ -122,18 +170,40 @@ def format_docs(docs):
     return "\n\n".join(d.page_content for d in docs)
 
 
+def build_search_query(data):
+    question = data["question"]
+    history = data.get("history", [])
+
+    history_text = " ".join([m.content for m in history[-6:]])
+
+    return f"""
+Профиль диалога:
+{history_text}
+
+Последний вопрос:
+{question}
+
+Найди информацию о подходящих курсах для ребёнка.
+"""
+
+
 rag_chain = (
     RunnableParallel({
         "question": RunnableLambda(lambda x: x["question"]),
-        "context": RunnableLambda(lambda x: retriever.invoke(x["question"]))
-                   | RunnableLambda(format_docs),
-        "history": RunnableLambda(lambda x: x.get("history", [])[-8:])
+        "context": (
+            RunnableLambda(build_search_query)
+            | RunnableLambda(lambda q: retriever.invoke(q))
+            | RunnableLambda(format_docs)
+        ),
+        "history": RunnableLambda(lambda x: x.get("history", [])[-10:])
     })
     | prompt
     | RunnableLambda(lambda msg: msg.to_string())
     | RunnableLambda(lambda text: asyncio.run(giga_invoke_async(text)))
     | StrOutputParser()
 )
+
+
 
 
 # Обёртка с историей
