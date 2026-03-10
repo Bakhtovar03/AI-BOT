@@ -4,7 +4,6 @@ from aiogram.fsm.state import StatesGroup, State, default_state
 from aiogram.types import Message, CallbackQuery, InputMediaPhoto, InputMediaVideo, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 import secrets
-from LLM.llm import redis_client
 from keyboards.keyboards import create_keyboards
 from lexicon.lexicon import ADMIN_BUTTON_LEXICON
 from utils import IsAdmin
@@ -109,7 +108,7 @@ async def response_delete_admin(message: Message, state: FSMContext):
 
 
 # Обработчик callback запроса для удаления администратора
-@admin_router.callback_query(F.data, FSMAdmin.delete_admin)
+@admin_router.callback_query(F.data, StateFilter(FSMAdmin.delete_admin))
 async def delete_admin(callback: CallbackQuery, state: FSMContext):
     # Получаем объект Redis из бота
     redis_client = getattr(callback.bot, 'redis_client')
@@ -226,7 +225,7 @@ async def request_for_remove_video(message: Message, state: FSMContext):
 
 
 # удаление видео
-@admin_router.message(~F.text != 'отмена', StateFilter(FSMAdmin.delete_video))
+@admin_router.message(F.text & (F.text != 'отмена'), StateFilter(FSMAdmin.delete_video))
 async def delete_video(message: Message, state: FSMContext):
     if message.text.isdigit() and (0 < int(message.text) <= 10):
         redis_client = getattr(message.bot, 'redis_client')

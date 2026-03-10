@@ -4,7 +4,7 @@ from aiogram.types import Message, CallbackQuery, InputMediaVideo, InputMediaPho
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart, StateFilter
 from lexicon.lexicon import COMMAND_LEXICON, OTHER_LEXICON
-from LLM.llm import ask_giga_chat_async, redis_client
+from LLM.llm import ask_giga_chat_async
 from keyboards.inlinekeyboards import create_inline_keyboards
 
 
